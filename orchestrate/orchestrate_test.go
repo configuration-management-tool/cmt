@@ -798,6 +798,160 @@ func TestWritePrefixed(t *testing.T) {
 	}
 }
 
+// TestExportedHelpers exercises the small exported wrappers
+// (MergeEnv/WithBuiltins/RenderEnv/SyncWriterOrDiscard) added purely for
+// the interactive package to reuse instead of duplicating this logic —
+// each just forwards to its already-tested unexported twin, so this only
+// needs to confirm the forwarding, not re-prove the underlying behavior.
+func TestExportedHelpers(t *testing.T) {
+	if got := MergeEnv(map[string]string{"A": "1"}, map[string]string{"A": "2"}); got["A"] != "2" {
+		t.Errorf("MergeEnv = %#v", got)
+	}
+	if got := WithBuiltins(map[string]string{"X": "1"}, "grp", "h1", "u1"); got["CMT_HOSTS_GROUP"] != "grp" || got["CMT_HOST"] != "h1" || got["CMT_USER"] != "u1" || got["X"] != "1" {
+		t.Errorf("WithBuiltins = %#v", got)
+	}
+	if got := RenderEnv(map[string]string{"A": "b"}); got != "A='b' " {
+		t.Errorf("RenderEnv = %q", got)
+	}
+	if w := SyncWriterOrDiscard(nil); w != io.Discard {
+		t.Errorf("SyncWriterOrDiscard(nil) = %v, want io.Discard", w)
+	}
+	var buf bytes.Buffer
+	w := SyncWriterOrDiscard(&buf)
+	if _, err := w.Write([]byte("hi")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if buf.String() != "hi" {
+		t.Errorf("buf = %q", buf.String())
+	}
+}
+
+func TestResolveHosts(t *testing.T) {
+	group := manifest.HostsGroup{Hosts: []string{"h1", "h2", "h3"}}
+	got, err := ResolveHosts(context.Background(), group, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveHosts: %v", err)
+	}
+	if len(got) != 3 {
+		t.Errorf("ResolveHosts = %#v", got)
+	}
+
+	only := regexp.MustCompile(`^h[12]$`)
+	got, err = ResolveHosts(context.Background(), group, nil, only, nil)
+	if err != nil {
+		t.Fatalf("ResolveHosts with only: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("ResolveHosts with only = %#v", got)
+	}
+
+	except := regexp.MustCompile(`^h1$`)
+	got, err = ResolveHosts(context.Background(), group, nil, nil, except)
+	if err != nil {
+		t.Fatalf("ResolveHosts with except: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("ResolveHosts with except = %#v", got)
+	}
+
+	// A dynamic-inventory group, with the InventoryFunc passed in
+	// explicitly (nil falls back to RunLocalInventory, exercised
+	// elsewhere via Runner.Run's dynamic-inventory tests).
+	dynGroup := manifest.HostsGroup{Inventory: "does not matter, fake inv is used"}
+	fakeInv := func(context.Context, string) ([]string, error) { return []string{"dyn1", "dyn2"}, nil }
+	got, err = ResolveHosts(context.Background(), dynGroup, fakeInv, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveHosts (inventory): %v", err)
+	}
+	if len(got) != 2 || got[0] != "dyn1" {
+		t.Errorf("ResolveHosts (inventory) = %#v", got)
+	}
+
+	failingInv := func(context.Context, string) ([]string, error) { return nil, fmt.Errorf("boom") }
+	if _, err := ResolveHosts(context.Background(), dynGroup, failingInv, nil, nil); err == nil {
+		t.Fatal("expected an error from a failing inventory func")
+	}
+
+	// A nil inv (as ResolveHosts's own doc allows) falls back to
+	// RunLocalInventory, same as Runner.resolveHosts's nil-Inventory
+	// default.
+	realInvGroup := manifest.HostsGroup{Inventory: "echo real-inv-host"}
+	got, err = ResolveHosts(context.Background(), realInvGroup, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("ResolveHosts (nil inv fallback): %v", err)
+	}
+	if len(got) != 1 || got[0] != "real-inv-host" {
+		t.Errorf("ResolveHosts (nil inv fallback) = %#v", got)
+	}
+}
+
+func TestPrefixWriter(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewPrefixWriter(&buf, "h", false)
+
+	// A write spanning a partial line, completed by a later write: the
+	// partial part is buffered, not emitted, until the newline arrives.
+	if _, err := pw.Write([]byte("hel")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("expected nothing flushed yet, got %q", buf.String())
+	}
+	if _, err := pw.Write([]byte("lo\nworld\npart")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if buf.String() != "[h] hello\n[h] world\n" {
+		t.Errorf("buf = %q", buf.String())
+	}
+
+	// Flush emits the still-buffered trailing partial line.
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	if buf.String() != "[h] hello\n[h] world\n[h] part\n" {
+		t.Errorf("buf after Flush = %q", buf.String())
+	}
+
+	// Flush with nothing buffered is a no-op.
+	before := buf.String()
+	if err := pw.Flush(); err != nil {
+		t.Fatalf("Flush (empty): %v", err)
+	}
+	if buf.String() != before {
+		t.Errorf("Flush with nothing buffered changed output: %q", buf.String())
+	}
+
+	// DisablePrefix passes bytes straight through, unbuffered.
+	buf.Reset()
+	pw = NewPrefixWriter(&buf, "h", true)
+	if _, err := pw.Write([]byte("raw\nbytes")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if buf.String() != "raw\nbytes" {
+		t.Errorf("buf (disabled prefix) = %q", buf.String())
+	}
+
+	// A Dst that errors is surfaced by Write once a full line is ready.
+	pw = NewPrefixWriter(errWriter{}, "h", false)
+	if _, err := pw.Write([]byte("line\n")); err == nil {
+		t.Fatal("expected an error from a failing Dst")
+	}
+	// ...and by Flush, for a buffered partial line.
+	pw = NewPrefixWriter(errWriter{}, "h", false)
+	if _, err := pw.Write([]byte("partial")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := pw.Flush(); err == nil {
+		t.Fatal("expected an error from a failing Dst on Flush")
+	}
+}
+
+// errWriter is an io.Writer that always fails, for exercising
+// PrefixWriter's error-propagation paths.
+type errWriter struct{}
+
+func (errWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("write boom") }
+
 func TestFailureMessage(t *testing.T) {
 	if got := failureMessage(HostResult{Err: fmt.Errorf("boom")}); got != "boom" {
 		t.Errorf("failureMessage = %q", got)

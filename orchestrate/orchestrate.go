@@ -15,6 +15,7 @@ package orchestrate
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -266,9 +267,23 @@ func (r *Runner) uploadOne(ctx context.Context, host string, group manifest.Host
 // resolveHosts resolves group's static or dynamic host list, then
 // applies opts.Only/Except.
 func (r *Runner) resolveHosts(ctx context.Context, group manifest.HostsGroup, opts Options) ([]string, error) {
+	inv := r.Inventory
+	if inv == nil {
+		inv = RunLocalInventory
+	}
+	return ResolveHosts(ctx, group, inv, opts.Only, opts.Except)
+}
+
+// ResolveHosts resolves group's static hosts list or dynamic inventory
+// command (via inv) into a host list, then applies the only/except
+// filters. It is exported so the interactive package (the streaming,
+// live-session executor for `interactive = true` commands) resolves
+// hosts identically to this buffered path — host resolution is shared,
+// only "how the command is actually driven" differs between the two
+// packages.
+func ResolveHosts(ctx context.Context, group manifest.HostsGroup, inv InventoryFunc, only, except *regexp.Regexp) ([]string, error) {
 	var hosts []string
 	if group.Inventory != "" {
-		inv := r.Inventory
 		if inv == nil {
 			inv = RunLocalInventory
 		}
@@ -283,10 +298,10 @@ func (r *Runner) resolveHosts(ctx context.Context, group manifest.HostsGroup, op
 
 	out := hosts[:0:0]
 	for _, h := range hosts {
-		if opts.Only != nil && !opts.Only.MatchString(h) {
+		if only != nil && !only.MatchString(h) {
 			continue
 		}
-		if opts.Except != nil && opts.Except.MatchString(h) {
+		if except != nil && except.MatchString(h) {
 			continue
 		}
 		out = append(out, h)
@@ -337,6 +352,11 @@ func mergeEnv(layers ...map[string]string) map[string]string {
 	return out
 }
 
+// MergeEnv is mergeEnv, exported so the interactive package (streaming
+// exec for `interactive = true` commands) layers env vars identically to
+// this buffered path instead of duplicating the layering rule.
+func MergeEnv(layers ...map[string]string) map[string]string { return mergeEnv(layers...) }
+
 // withBuiltins returns a copy of env with cmt's builtin CMT_* variables
 // added (these always win over a same-named manifest env var, so a
 // manifest cannot accidentally shadow them).
@@ -349,6 +369,11 @@ func withBuiltins(env map[string]string, groupName, host, user string) map[strin
 	out["CMT_HOST"] = host
 	out["CMT_USER"] = user
 	return out
+}
+
+// WithBuiltins is withBuiltins, exported for the same reason as MergeEnv.
+func WithBuiltins(env map[string]string, groupName, host, user string) map[string]string {
+	return withBuiltins(env, groupName, host, user)
 }
 
 // renderEnv renders env deterministically as a shell `KEY='VAL' ...`
@@ -372,6 +397,9 @@ func renderEnv(env map[string]string) string {
 	return b.String()
 }
 
+// RenderEnv is renderEnv, exported for the same reason as MergeEnv.
+func RenderEnv(env map[string]string) string { return renderEnv(env) }
+
 // syncWriter serializes concurrent writes to an underlying io.Writer
 // that may not be safe for concurrent use on its own.
 type syncWriter struct {
@@ -393,6 +421,12 @@ func syncWriterOrDiscard(w io.Writer) io.Writer {
 	}
 	return &syncWriter{w: w}
 }
+
+// SyncWriterOrDiscard is syncWriterOrDiscard, exported so the interactive
+// package's concurrently-written Stdout/Stderr get the same
+// safe-for-concurrent-use wrapping this package gives its own fanned-out
+// hosts, instead of duplicating this small synchronization helper.
+func SyncWriterOrDiscard(w io.Writer) io.Writer { return syncWriterOrDiscard(w) }
 
 func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
@@ -421,6 +455,70 @@ func writePrefixed(w io.Writer, host, text string, disablePrefix bool) {
 	}
 	lines := strings.Split(strings.TrimSuffix(text, "\n"), "\n")
 	for _, line := range lines {
-		fmt.Fprintf(w, "[%s] %s\n", host, line)
+		fmt.Fprintf(w, prefixLineFormat, host, line)
 	}
+}
+
+// prefixLineFormat is the one "[host] line\n" format shared by
+// writePrefixed (this package's buffered path, given a whole command's
+// output text after it finishes) and PrefixWriter below (the interactive
+// package's streaming path, given output bytes as they arrive) — the
+// same visual convention either way.
+const prefixLineFormat = "[%s] %s\n"
+
+// PrefixWriter is an io.Writer that prefixes every complete line written
+// to it with "[host] " (matching writePrefixed's convention) before
+// forwarding it to Dst, buffering any trailing partial line until either
+// a newline completes it or Flush is called. Unlike writePrefixed, which
+// prefixes a whole already-finished command's output in one call,
+// PrefixWriter is built for output arriving progressively (e.g. from
+// io.Copy against a live stdout/stderr pipe) — the interactive package's
+// reason for needing it; DisablePrefix mirrors Options.DisablePrefix and
+// passes bytes through unprefixed and unbuffered.
+type PrefixWriter struct {
+	Dst           io.Writer
+	Host          string
+	DisablePrefix bool
+
+	buf []byte
+}
+
+// NewPrefixWriter returns a PrefixWriter ready to use.
+func NewPrefixWriter(dst io.Writer, host string, disablePrefix bool) *PrefixWriter {
+	return &PrefixWriter{Dst: dst, Host: host, DisablePrefix: disablePrefix}
+}
+
+// Write implements io.Writer. It never returns an error itself unless
+// the underlying Dst does, and it always reports having consumed all of
+// p (matching io.Writer's usual contract for a buffering writer).
+func (p *PrefixWriter) Write(b []byte) (int, error) {
+	if p.DisablePrefix {
+		return p.Dst.Write(b)
+	}
+	p.buf = append(p.buf, b...)
+	for {
+		i := bytes.IndexByte(p.buf, '\n')
+		if i < 0 {
+			break
+		}
+		line := p.buf[:i]
+		p.buf = p.buf[i+1:]
+		if _, err := fmt.Fprintf(p.Dst, prefixLineFormat, p.Host, line); err != nil {
+			return len(b), err
+		}
+	}
+	return len(b), nil
+}
+
+// Flush writes out any buffered, not-yet-newline-terminated partial line
+// (common right when a live stream's process exits mid-line). A no-op
+// when nothing is buffered, or when DisablePrefix is set (Write never
+// buffers in that mode).
+func (p *PrefixWriter) Flush() error {
+	if len(p.buf) == 0 {
+		return nil
+	}
+	_, err := fmt.Fprintf(p.Dst, prefixLineFormat, p.Host, p.buf)
+	p.buf = nil
+	return err
 }
