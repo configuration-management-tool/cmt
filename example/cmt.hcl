@@ -53,6 +53,18 @@ command "upload" {
   }
 }
 
+command "shell" {
+  desc = "Interactive shell on all hosts"
+  # interactive = true streams live instead of buffering: keystrokes
+  # typed at cmt's own stdin are forwarded live to every resolved
+  # host's bash, and every host's output streams back live, prefixed
+  # per host, as it's produced — invoke standalone: `cmt GROUP shell`
+  # (interactive commands cannot appear in a target's commands list,
+  # or be combined with other commands on the same invocation).
+  run         = "bash"
+  interactive = true
+}
+
 target "deploy" {
   commands = ["build", "prepare", "upload", "restart"]
 }
