@@ -13,7 +13,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	remoteexec "github.com/go-remoteexec/transport"
 
@@ -148,6 +150,24 @@ func TestRunManifestParseError(t *testing.T) {
 		t.Fatalf("exit code = %d, want 1", code)
 	}
 	if !strings.Contains(stderr.String(), "cmt:") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// TestRunUnknownCommandName covers run()'s own ExpandCommands call (added
+// so an interactive=true command can be detected before the buffered
+// path runs — see detectInteractiveCommand) failing for a name that
+// matches neither a command nor a target.
+func TestRunUnknownCommandName(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, basicManifest)
+
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-f", path, "g", "nope"}, &stdout, &stderr, strings.NewReader(""), fakeDial(0))
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "not a known command or target") {
 		t.Errorf("stderr = %q", stderr.String())
 	}
 }
@@ -291,6 +311,137 @@ command "greet" {
 	}
 	if !strings.Contains(stdout.String(), "hello-from-cmt") {
 		t.Errorf("stdout = %q", stdout.String())
+	}
+}
+
+// syncBuf is a concurrency-safe bytes.Buffer wrapper: an interactive
+// command's fanned-out hosts write to Stdout/Stderr concurrently, so a
+// test reading it live (from a different goroutine, while run() is
+// still executing) needs a writer/reader safe for that.
+type syncBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+func waitForSubstring(t *testing.T, got func() string, want string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(got(), want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %q in %q", want, got())
+}
+
+// TestRunInteractiveEndToEndLocal is cmd/cmt's required real,
+// non-mocked end-to-end test for the interactive=true feature: a
+// manifest command with interactive=true, run through the actual CLI
+// entrypoint (real os/exec underneath, via package interactive, over
+// the local transport — no network, no fake Dial, matching
+// TestRunEndToEndLocal's own local-only convention). A controlled
+// io.Pipe stands in for a real terminal's stdin; the test writes to it
+// and asserts the echoed reply shows up live (before the process has
+// exited), then closes it (EOF) and waits for the CLI call to return
+// with a clean exit code.
+func TestRunInteractiveEndToEndLocal(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+hosts_group "g" { hosts = ["localhost"] }
+command "shell" {
+  desc        = "Interactive shell on all hosts"
+  run         = "sh -c 'while IFS= read -r line; do echo \"echo:$line\"; done'"
+  interactive = true
+}
+`)
+	stdinR, stdinW := io.Pipe()
+	stdout := &syncBuf{}
+	var stderr bytes.Buffer
+
+	done := make(chan int, 1)
+	go func() {
+		done <- run([]string{"-f", path, "g", "shell"}, stdout, &stderr, stdinR, connect.Dial)
+	}()
+
+	if _, err := stdinW.Write([]byte("hello-interactive\n")); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	waitForSubstring(t, stdout.String, "[localhost] echo:hello-interactive")
+	stdinW.Close() // EOF -> the remote `read` loop exits -> the session ends
+
+	select {
+	case code := <-done:
+		if code != 0 {
+			t.Fatalf("exit code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("run() did not return; stdout so far = %q", stdout.String())
+	}
+
+	if !strings.Contains(stdout.String(), "interactive session summary:") {
+		t.Errorf("stdout missing summary: %q", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "localhost: exit code 0") {
+		t.Errorf("stdout missing per-host summary line: %q", stdout.String())
+	}
+}
+
+// TestRunInteractiveCombinedWithOtherCommands covers
+// detectInteractiveCommand's validation: an interactive command named
+// alongside any other command on the same invocation is rejected before
+// anything runs.
+func TestRunInteractiveCombinedWithOtherCommands(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+hosts_group "g" { hosts = ["localhost"] }
+command "shell" {
+  run         = "bash"
+  interactive = true
+}
+command "other" { run = "echo hi" }
+`)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-f", path, "g", "shell", "other"}, &stdout, &stderr, strings.NewReader(""), connect.Dial)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "must be invoked alone") {
+		t.Errorf("stderr = %q", stderr.String())
+	}
+}
+
+// TestRunInteractiveFailure covers runInteractive's error path (a
+// failure surfaced from interactive.Runner.Run) mapping to exit code 1,
+// via an unknown hosts_group.
+func TestRunInteractiveFailure(t *testing.T) {
+	dir := t.TempDir()
+	path := writeManifest(t, dir, `
+hosts_group "g" { hosts = ["localhost"] }
+command "shell" {
+  run         = "true"
+  interactive = true
+}
+`)
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"-f", path, "nope", "shell"}, &stdout, &stderr, strings.NewReader(""), connect.Dial)
+	if code != 1 {
+		t.Fatalf("exit code = %d, want 1; stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "cmt:") {
+		t.Errorf("stderr = %q", stderr.String())
 	}
 }
 

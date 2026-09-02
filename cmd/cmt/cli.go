@@ -11,9 +11,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
 
+	"github.com/configuration-management-tool/cmt/interactive"
 	"github.com/configuration-management-tool/cmt/manifest"
 	"github.com/configuration-management-tool/cmt/orchestrate"
 )
@@ -128,6 +130,25 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, dial orchestr
 		return 1
 	}
 
+	// ExpandCommands is called here (and, redundantly but harmlessly,
+	// again inside orchestrate.Runner.Run below for the non-interactive
+	// path) purely so an interactive=true command can be detected and
+	// routed to package interactive before any buffered-path machinery
+	// runs — see detectInteractiveCommand.
+	cmdNames, err := m.ExpandCommands(commands)
+	if err != nil {
+		fmt.Fprintln(stderr, "cmt:", err)
+		return 1
+	}
+	interactiveCmd, isInteractive, err := detectInteractiveCommand(m, cmdNames)
+	if err != nil {
+		fmt.Fprintln(stderr, "cmt:", err)
+		return 1
+	}
+	if isInteractive {
+		return runInteractive(m, hostsGroup, interactiveCmd, envOverrides, onlyRe, exceptRe, *disablePrefix, stdout, stderr, stdin)
+	}
+
 	isTTY := false
 	if f, ok := stdin.(*os.File); ok {
 		isTTY = isTerminal(f)
@@ -152,6 +173,58 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, dial orchestr
 		}
 	}
 
+	if runErr != nil {
+		fmt.Fprintln(stderr, "cmt:", runErr)
+		return 1
+	}
+	return 0
+}
+
+// detectInteractiveCommand looks for an interactive=true command among
+// cmdNames (already target-expanded — manifest.Manifest.Validate
+// already rejects an interactive command referenced *inside* a target,
+// so the only way one appears here is a direct `cmt group cmdname` on
+// the command line). It is an error for an interactive command to be
+// combined with any other command on the same invocation: a live
+// keystroke-forwarding session is inherently a single, standalone,
+// blocking thing — there is only one local stdin to give it, and
+// nothing sensible to buffer-run before or after it in the same
+// process.
+func detectInteractiveCommand(m *manifest.Manifest, cmdNames []string) (name string, isInteractive bool, err error) {
+	var found []string
+	for _, n := range cmdNames {
+		if cmd, ok := m.Commands[n]; ok && cmd.Interactive {
+			found = append(found, n)
+		}
+	}
+	if len(found) == 0 {
+		return "", false, nil
+	}
+	if len(cmdNames) != 1 {
+		return "", false, fmt.Errorf("interactive command %q must be invoked alone (cmt HOSTS_GROUP %s), not combined with other commands", found[0], found[0])
+	}
+	return found[0], true, nil
+}
+
+// runInteractive drives one interactive=true command through package
+// interactive instead of the buffered orchestrate path. It wires
+// SIGINT (via signal.NotifyContext) to the context passed into
+// interactive.Runner.Run, so Ctrl-C cleanly force-closes every open
+// session rather than leaving cmt hung waiting on a live command.
+func runInteractive(m *manifest.Manifest, hostsGroup, cmdName string, envOverrides map[string]string, onlyRe, exceptRe *regexp.Regexp, disablePrefix bool, stdout, stderr io.Writer, stdin io.Reader) int {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
+	runner := &interactive.Runner{Manifest: m}
+	_, runErr := runner.Run(ctx, hostsGroup, cmdName, interactive.Options{
+		EnvOverrides:  envOverrides,
+		Only:          onlyRe,
+		Except:        exceptRe,
+		DisablePrefix: disablePrefix,
+		Stdin:         stdin,
+		Stdout:        stdout,
+		Stderr:        stderr,
+	})
 	if runErr != nil {
 		fmt.Fprintln(stderr, "cmt:", runErr)
 		return 1
