@@ -1,0 +1,87 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+# Track the latest stable Go (org convention). go.mod floor is 1.26.4.
+jobs:
+  # Build, vet, race-test, and enforce 100% coverage on the three host OSes.
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go version
+      - run: go vet ./...
+      - run: go build ./...
+      - name: Test (all packages)
+        run: go test -race ./...
+      - name: Coverage gate (100% on manifest/connect/orchestrate)
+        shell: bash
+        run: |
+          # cmd/cmt is excluded from the gate itself: its own logic lives
+          # in cli.go and is covered like everything else, but main() is
+          # 3 lines of glue (os.Exit(run(...))) that can't be exercised
+          # in-process without exiting the test binary — the documented
+          # "possibly tiny main.go glue" exemption. Its tests still run
+          # above as part of `go test ./...`.
+          COVERPKG=$(go list ./... | grep -v '/cmd/cmt$' | paste -sd, -)
+          go test -coverpkg="$COVERPKG" -coverprofile=cover.out $(go list ./... | grep -v '/cmd/cmt$')
+          go tool cover -func=cover.out | tail -n 25
+          cov=$(go tool cover -func=cover.out | tail -1 | awk '{print $3}' | tr -d '%')
+          echo "coverage: ${cov}%"
+          awk -v t="$cov" 'BEGIN { exit !(t+0 >= 100.0) }' || {
+            echo "::error::coverage ${cov}% < 100%"; exit 1; }
+          echo "--- cmd/cmt (informational, not gated: main() is untestable glue) ---"
+          go test -cover ./cmd/cmt/...
+
+  # Native runs on the two first-class arches.
+  arch-native:
+    name: arch ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    label: amd64 }
+          - { os: ubuntu-24.04-arm, label: arm64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: go env GOARCH && go test ./...
+
+  # The remaining four 64-bit targets run the suite under qemu-user.
+  arch-qemu:
+    name: arch ${{ matrix.goarch }} (qemu)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goarch: riscv64, qemu: qemu-riscv64-static }
+          - { goarch: loong64, qemu: qemu-loongarch64-static }
+          - { goarch: ppc64le, qemu: qemu-ppc64le-static }
+          - { goarch: s390x,   qemu: qemu-s390x-static }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version: stable
+      - run: sudo apt-get update && sudo apt-get install -y qemu-user-static
+      - name: Test under qemu (${{ matrix.goarch }})
+        run: GOARCH=${{ matrix.goarch }} go test -exec=${{ matrix.qemu }} ./...

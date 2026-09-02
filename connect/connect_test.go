@@ -211,10 +211,10 @@ func (fakeConn) Exec(context.Context, string, io.Reader) (remoteexec.Result, err
 	return remoteexec.Result{}, nil
 }
 func (fakeConn) Put(context.Context, string, string, remoteexec.PutOptions) error { return nil }
-func (fakeConn) Fetch(context.Context, string, string) error                     { return nil }
-func (fakeConn) Remove(context.Context, string) error                            { return nil }
-func (fakeConn) TempPath(base string) string                                     { return "/tmp/" + base }
-func (fakeConn) Close() error                                                    { return nil }
+func (fakeConn) Fetch(context.Context, string, string) error                      { return nil }
+func (fakeConn) Remove(context.Context, string) error                             { return nil }
+func (fakeConn) TempPath(base string) string                                      { return "/tmp/" + base }
+func (fakeConn) Close() error                                                     { return nil }
 
 // TestDialSuccessPath exercises Dial's post-dial logic (the Become wrap,
 // the final return) by substituting dialSSHFunc/dialWinRMFunc for the

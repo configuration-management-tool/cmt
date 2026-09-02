@@ -18,7 +18,14 @@ hosts_group "staging" {
 
 command "echo" {
   desc = "Echo the resolved env on the local machine"
-  run  = "echo hello $NAME from $CMT_HOSTS_GROUP"
+  # $NAME/$CMT_HOSTS_GROUP are exported as a shell prefix ahead of this
+  # command line (KEY='VAL' ... cmd), so they only reach a *child*
+  # process's own environment — a bare `echo hello $NAME` would expand
+  # $NAME during the outer shell's parse, before the assignment applies,
+  # and print nothing. Wrapping in a nested `sh -c '...'` (single-quoted,
+  # so the outer shell does not touch it) defers expansion to a process
+  # that inherits the exported variables.
+  run = "sh -c 'echo hello $NAME from $CMT_HOSTS_GROUP'"
 }
 
 command "restart" {

@@ -128,12 +128,17 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, dial orchestr
 		return 1
 	}
 
+	isTTY := false
+	if f, ok := stdin.(*os.File); ok {
+		isTTY = isTerminal(f)
+	}
+
 	opts := orchestrate.Options{
 		EnvOverrides:  envOverrides,
 		Only:          onlyRe,
 		Except:        exceptRe,
 		DisablePrefix: *disablePrefix,
-		StdinData:     readPipedStdin(stdin),
+		StdinData:     readPipedStdin(stdin, isTTY),
 		Stdout:        stdout,
 		Stderr:        stderr,
 	}
@@ -154,12 +159,12 @@ func run(args []string, stdout, stderr io.Writer, stdin io.Reader, dial orchestr
 	return 0
 }
 
-// readPipedStdin reads stdin fully when it is not an interactive
-// terminal, so its content can be replayed (via a fresh reader) to
-// every host a `run` command reaches. It returns nil when stdin is a
-// terminal (interactive use, no piped input to forward) or empty.
-func readPipedStdin(stdin io.Reader) []byte {
-	if f, ok := stdin.(*os.File); ok && isTerminal(f) {
+// readPipedStdin reads stdin fully when isTTY is false, so its content
+// can be replayed (via a fresh reader) to every host a `run` command
+// reaches. It returns nil when stdin is a terminal (interactive use, no
+// piped input to forward) or empty.
+func readPipedStdin(stdin io.Reader, isTTY bool) []byte {
+	if isTTY {
 		return nil
 	}
 	data, err := io.ReadAll(stdin)
