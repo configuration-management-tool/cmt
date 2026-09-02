@@ -131,14 +131,13 @@ func (r *Runner) Run(ctx context.Context, groupName string, names []string, opts
 	}
 
 	env := mergeEnv(r.Manifest.Env, group.Env, opts.EnvOverrides)
-	out := opts.Stdout
-	if out == nil {
-		out = io.Discard
-	}
-	errOut := opts.Stderr
-	if errOut == nil {
-		errOut = io.Discard
-	}
+	// Fanned-out hosts write to the same Stdout/Stderr concurrently
+	// (bounded only by a command's `serial`, unlimited by default), so
+	// both need a writer safe for concurrent use — an io.Writer
+	// generally is not (e.g. *bytes.Buffer, or even *os.File writing
+	// more than fits one syscall).
+	out := syncWriterOrDiscard(opts.Stdout)
+	errOut := syncWriterOrDiscard(opts.Stderr)
 
 	var all []HostResult
 	for _, cmdName := range cmdNames {
@@ -295,13 +294,21 @@ func (r *Runner) resolveHosts(ctx context.Context, group manifest.HostsGroup, op
 	return out, nil
 }
 
+// localInventoryExec runs cmd through transport.NewLocal(). It is a
+// variable, rather than inlined into RunLocalInventory, purely so a test
+// can substitute a transport-error outcome (a real local shell has no
+// portable way to force one) — production code never reassigns it.
+var localInventoryExec = func(ctx context.Context, cmd string) (remoteexec.Result, error) {
+	local := remoteexec.NewLocal()
+	defer local.Close()
+	return local.Exec(ctx, cmd, nil)
+}
+
 // RunLocalInventory is the default InventoryFunc: it runs cmd through a
 // local shell (transport.NewLocal()) and splits its stdout into
 // non-empty, trimmed lines.
 func RunLocalInventory(ctx context.Context, cmd string) ([]string, error) {
-	local := remoteexec.NewLocal()
-	defer local.Close()
-	res, err := local.Exec(ctx, cmd, nil)
+	res, err := localInventoryExec(ctx, cmd)
 	if err != nil {
 		return nil, err
 	}
@@ -363,6 +370,28 @@ func renderEnv(env map[string]string) string {
 		b.WriteByte(' ')
 	}
 	return b.String()
+}
+
+// syncWriter serializes concurrent writes to an underlying io.Writer
+// that may not be safe for concurrent use on its own.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (s *syncWriter) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.w.Write(p)
+}
+
+// syncWriterOrDiscard wraps w for safe concurrent use, or returns
+// io.Discard if w is nil.
+func syncWriterOrDiscard(w io.Writer) io.Writer {
+	if w == nil {
+		return io.Discard
+	}
+	return &syncWriter{w: w}
 }
 
 func shellQuote(s string) string {
