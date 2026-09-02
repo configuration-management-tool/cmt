@@ -295,11 +295,12 @@ func decodeCommand(blk *hclsyntax.Block) (Command, error) {
 		func() (err error) { cmd.Local, hasLocal, err = attrString(attrs, "local"); return },
 		func() (err error) { cmd.Serial, _, err = attrInt(attrs, "serial"); return },
 		func() (err error) { cmd.Once, _, err = attrBool(attrs, "once"); return },
+		func() (err error) { cmd.Interactive, _, err = attrBool(attrs, "interactive"); return },
 	)
 	if err != nil {
 		return Command{}, fmt.Errorf("command %q: %w", name, err)
 	}
-	if err := checkUnknownAttrs(attrs, "desc", "run", "local", "serial", "once"); err != nil {
+	if err := checkUnknownAttrs(attrs, "desc", "run", "local", "serial", "once", "interactive"); err != nil {
 		return Command{}, fmt.Errorf("command %q: %w", name, err)
 	}
 	if err := checkUnknownBlocks(blk.Body.Blocks, "upload"); err != nil {
@@ -327,6 +328,12 @@ func decodeCommand(blk *hclsyntax.Block) (Command, error) {
 	}
 	if hasLocal && (cmd.Serial != 0 || cmd.Once) {
 		return Command{}, fmt.Errorf("command %q: \"serial\"/\"once\" apply only to \"run\"/\"upload\" commands, not \"local\"", name)
+	}
+	if cmd.Interactive && !hasRun {
+		return Command{}, fmt.Errorf("command %q: \"interactive\" is only valid alongside \"run\" (not \"local\" or an \"upload\" block)", name)
+	}
+	if cmd.Interactive && (cmd.Serial != 0 || cmd.Once) {
+		return Command{}, fmt.Errorf("command %q: \"interactive\" is mutually exclusive with \"serial\"/\"once\" (an interactive command always runs on every resolved host at once)", name)
 	}
 
 	return cmd, nil

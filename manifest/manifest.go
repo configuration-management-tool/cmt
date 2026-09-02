@@ -130,6 +130,21 @@ type Command struct {
 	// Once, when true, runs a Run or Upload command on only the first
 	// resolved host instead of every host.
 	Once bool
+
+	// Interactive, when true, changes *how* Run is executed: instead of
+	// the buffered "run to completion, then return one Result per host"
+	// path (package orchestrate), it opens a live, streaming session to
+	// every resolved host at once and forwards cmt's own stdin to all of
+	// them keystroke-by-keystroke, live (package interactive) — sup's
+	// `stdin: true`. Only valid alongside Run (Local and Upload commands
+	// have no interactive equivalent), and mutually exclusive with
+	// Serial/Once (an interactive command always addresses every
+	// resolved host at once; there is no way to run it "serially" or
+	// "once" and still call it a live multi-host session). An
+	// interactive command referenced from inside a target's Commands is
+	// a parse-time error (see Validate) — sup's stdin sessions are
+	// invoked standalone, not chained into a fail-fast sequence.
+	Interactive bool
 }
 
 // Upload describes a file/directory copy command (a command's `upload {}`
@@ -152,7 +167,10 @@ type Target struct {
 func (m *Manifest) Validate() error {
 	for _, t := range m.Targets {
 		for _, cmdName := range t.Commands {
-			if _, ok := m.Commands[cmdName]; ok {
+			if cmd, ok := m.Commands[cmdName]; ok {
+				if cmd.Interactive {
+					return fmt.Errorf("manifest: target %q references interactive command %q: interactive commands cannot be chained inside a target, invoke them standalone (cmt HOSTS_GROUP %s)", t.Name, cmdName, cmdName)
+				}
 				continue
 			}
 			if _, ok := m.Targets[cmdName]; ok {

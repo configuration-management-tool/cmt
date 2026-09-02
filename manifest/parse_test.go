@@ -182,6 +182,27 @@ target "deploy" {
 	}
 }
 
+func TestParseInteractiveCommand(t *testing.T) {
+	src := `
+command "shell" {
+  desc        = "Interactive shell on all hosts"
+  run         = "bash"
+  interactive = true
+}
+`
+	m, err := Parse([]byte(src), "test.hcl")
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	shell, ok := m.Commands["shell"]
+	if !ok {
+		t.Fatal("missing command shell")
+	}
+	if !shell.Interactive || shell.Run != "bash" {
+		t.Errorf("shell command = %#v", shell)
+	}
+}
+
 func TestParseExampleFile(t *testing.T) {
 	path := filepath.Join("..", "example", "cmt.hcl")
 	m, err := ParseFile(path)
@@ -604,6 +625,51 @@ hosts_group "g" { hosts = ["h2"] }`,
 			want: `"serial"/"once" apply only to "run"/"upload" commands, not "local"`,
 		},
 		{
+			name: "command interactive with local",
+			src: `command "c" {
+  local       = "echo hi"
+  interactive = true
+}`,
+			want: `"interactive" is only valid alongside "run"`,
+		},
+		{
+			name: "command interactive with upload",
+			src: `command "c" {
+  upload {
+    src = "a"
+    dst = "b"
+  }
+  interactive = true
+}`,
+			want: `"interactive" is only valid alongside "run"`,
+		},
+		{
+			name: "command interactive with serial",
+			src: `command "c" {
+  run         = "bash"
+  interactive = true
+  serial      = 2
+}`,
+			want: `"interactive" is mutually exclusive with "serial"/"once"`,
+		},
+		{
+			name: "command interactive with once",
+			src: `command "c" {
+  run         = "bash"
+  interactive = true
+  once        = true
+}`,
+			want: `"interactive" is mutually exclusive with "serial"/"once"`,
+		},
+		{
+			name: "command interactive not a bool",
+			src: `command "c" {
+  run         = "bash"
+  interactive = [1]
+}`,
+			want: `"interactive" must be a bool`,
+		},
+		{
 			name: "command duplicate upload block",
 			src: `command "c" {
   upload {
@@ -736,6 +802,15 @@ target "t" { commands = ["nope"] }`,
 target "t1" { commands = ["c"] }
 target "t2" { commands = ["t1"] }`,
 			want: `target "t2" references "t1", which is a target, not a command`,
+		},
+		{
+			name: "target references an interactive command",
+			src: `command "shell" {
+  run         = "bash"
+  interactive = true
+}
+target "t" { commands = ["shell"] }`,
+			want: `target "t" references interactive command "shell": interactive commands cannot be chained inside a target`,
 		},
 	}
 
