@@ -6,7 +6,7 @@ require (
 	github.com/go-remoteexec/transport v0.1.3
 	github.com/hashicorp/hcl/v2 v2.24.0
 	github.com/zclconf/go-cty v1.16.3
-	golang.org/x/crypto v0.55.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
