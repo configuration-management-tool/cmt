@@ -8,10 +8,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/configuration-management-tool/cmt/manifest"
 )
 
 // The pipe-constructor error paths in dialLocalSession and
@@ -150,4 +155,100 @@ func TestDialSSHSessionPipeFailures(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The ssh-agent path is the one piece of this package whose coverage
+// depended on the machine running the tests rather than on the tests
+// themselves: sshAgentAuthMethod reads $SSH_AUTH_SOCK, so a developer
+// laptop with an agent covered the dial-and-succeed branch while a CI
+// runner without one covered the empty-socket branch, and neither
+// covered both. The gate is 100%, so it passed locally and failed in
+// Actions at 99.7% with no test having changed.
+//
+// The socket this test serves itself pins the third state, so the
+// result no longer depends on what happens to be running around the
+// tests.
+
+// TestSSHAgentAuthMethodConnected adds the one branch ssh_test.go's
+// TestSSHAgentAuthMethod cannot reach: a socket that actually accepts.
+// That test covers the two refusals (no $SSH_AUTH_SOCK, and one pointing
+// at nothing), which is every branch a machine WITHOUT an agent runs --
+// and on a machine with one, the dial succeeds instead and the refusals
+// were the ones going unrun. Either way the package's coverage depended
+// on whether an agent happened to be running around the tests, which is
+// how this repository passed its own 100% gate locally and failed it in
+// Actions at 99.7% with no test having changed.
+func TestSSHAgentAuthMethodConnected(t *testing.T) {
+	if am := agentSocket(t); am == nil {
+		t.Fatal("sshAgentAuthMethod reported no agent while a listener was accepting")
+	}
+}
+
+// TestBuildSSHClientConfigUsesAgent covers the append in
+// buildSSHClientConfig that only runs when an agent answers — and, with
+// no key and no password configured, it is also the only auth method
+// present, so it is what keeps the function from returning its
+// "no usable authentication" error.
+func TestBuildSSHClientConfigUsesAgent(t *testing.T) {
+	agentSocket(t)
+
+	cfg, err := buildSSHClientConfig("someone", &manifest.SSHConfig{})
+	if err != nil {
+		t.Fatalf("buildSSHClientConfig with an agent available: %v", err)
+	}
+	if len(cfg.Auth) != 1 {
+		t.Fatalf("cfg.Auth has %d methods, want exactly the agent's one", len(cfg.Auth))
+	}
+}
+
+// agentSocket points $SSH_AUTH_SOCK at a Unix socket this test listens
+// on, and returns what sshAgentAuthMethod makes of it. The listener
+// accepts and closes: net.Dial is all sshAgentAuthMethod does before
+// handing the connection to agent.NewClient, so nothing here needs to
+// speak the agent protocol — and pretending to would be testing
+// x/crypto/ssh/agent rather than this package.
+func agentSocket(t *testing.T) ssh.AuthMethod {
+	t.Helper()
+
+	// Kept short deliberately: a Unix socket path is capped near 104
+	// bytes on darwin, and the per-subtest temp directory names here
+	// are long enough to make that a real risk rather than a note.
+	dir, err := os.MkdirTemp("", "ag")
+	if err != nil {
+		t.Fatalf("MkdirTemp: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+
+	sock := filepath.Join(dir, "s")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatalf("listening on %s: %v", sock, err)
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			c.Close()
+		}
+	}()
+
+	// Registered in this order deliberately: t.Cleanup runs LIFO, so the
+	// listener is closed FIRST and the wait for the accept loop second.
+	// The other way round deadlocks -- the goroutine only returns once
+	// Accept fails, which only happens once the listener is closed -- and
+	// it deadlocks silently, as a test binary that never finishes rather
+	// than one that fails.
+	t.Cleanup(func() { <-done })
+	t.Cleanup(func() { ln.Close() })
+
+	t.Setenv("SSH_AUTH_SOCK", sock)
+	am, ok := sshAgentAuthMethod()
+	if !ok {
+		t.Fatalf("sshAgentAuthMethod found no agent on %s", sock)
+	}
+	return am
 }
