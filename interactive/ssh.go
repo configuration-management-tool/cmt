@@ -100,22 +100,24 @@ func dialSSHSession(ctx context.Context, hostSpec string, group manifest.HostsGr
 	// As with local.go's cmd.Std{in,out,err}Pipe calls, these three only
 	// ever error on a session that's already had Start/Shell/Run called
 	// or the corresponding Stdin/Stdout/Stderr field already set —
-	// neither applies to sess here, so these branches are structurally
-	// defensive rather than independently reachable through this
-	// function's own call pattern.
-	stdin, err := sess.StdinPipe()
+	// neither applies to sess here, so they cannot be reached through
+	// this function's own call pattern. Each one closes the session AND
+	// the client before returning, which is exactly the kind of cleanup
+	// that goes wrong unnoticed when nothing ever runs it, so they are
+	// called through the seams below and a test swaps those.
+	stdin, err := sshStdinPipe(sess)
 	if err != nil {
 		sess.Close()
 		client.Close()
 		return nil, err
 	}
-	stdout, err := sess.StdoutPipe()
+	stdout, err := sshStdoutPipe(sess)
 	if err != nil {
 		sess.Close()
 		client.Close()
 		return nil, err
 	}
-	stderr, err := sess.StderrPipe()
+	stderr, err := sshStderrPipe(sess)
 	if err != nil {
 		sess.Close()
 		client.Close()
@@ -164,6 +166,17 @@ func dialSSHSession(ctx context.Context, hostSpec string, group manifest.HostsGr
 		},
 	}, nil
 }
+
+// Seams for the session's three pipe constructors, so the cleanup each
+// error path performs — closing the session AND the dialed client — is
+// executed by a test rather than only inspected. Swapped with t.Cleanup
+// restore, as interactive.go's isLocalHost is; no test in this package
+// calls t.Parallel.
+var (
+	sshStdinPipe  = (*ssh.Session).StdinPipe
+	sshStdoutPipe = (*ssh.Session).StdoutPipe
+	sshStderrPipe = (*ssh.Session).StderrPipe
+)
 
 // buildSSHClientConfig maps a manifest.SSHConfig onto an
 // *ssh.ClientConfig: private key (optionally passphrase-protected),
