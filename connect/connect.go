@@ -102,7 +102,7 @@ func Dial(ctx context.Context, hostSpec string, group manifest.HostsGroup) (remo
 	if group.WinRM != nil {
 		conn, err = dialWinRMFunc(ctx, buildWinRMConfig(user, host, port, group.WinRM))
 	} else {
-		conn, err = dialSSHFunc(ctx, buildSSHConfig(user, host, port, group.SSH))
+		conn, err = dialSSHFunc(ctx, BuildSSHConfig(user, host, port, group.SSH))
 	}
 	if err != nil {
 		return nil, fmt.Errorf("connect: dialing %q: %w", hostSpec, err)
@@ -120,11 +120,11 @@ func applyBecome(conn remoteexec.Connection, b *manifest.BecomeConfig) remoteexe
 	return remoteexec.Become(conn, becomeConfig(*b))
 }
 
-// buildSSHConfig maps the host string's own user/port (highest priority)
+// BuildSSHConfig maps the host string's own user/port (highest priority)
 // and the group's ssh{} block (fallback) onto a remoteexec.SSHConfig. It
 // does no I/O, which keeps every mapping decision unit-testable without a
 // network dial.
-func buildSSHConfig(user, host string, port int, cfg *manifest.SSHConfig) remoteexec.SSHConfig {
+func BuildSSHConfig(user, host string, port int, cfg *manifest.SSHConfig) remoteexec.SSHConfig {
 	c := remoteexec.SSHConfig{Host: host, User: user, Port: port}
 	if cfg != nil {
 		if c.User == "" {
@@ -152,7 +152,7 @@ func buildSSHConfig(user, host string, port int, cfg *manifest.SSHConfig) remote
 
 // buildWinRMConfig maps the host string's own user/port (highest
 // priority) and the group's winrm{} block onto a remoteexec.WinRMConfig.
-// It does no I/O, for the same reason as buildSSHConfig.
+// It does no I/O, for the same reason as BuildSSHConfig.
 func buildWinRMConfig(user, host string, port int, cfg *manifest.WinRMConfig) remoteexec.WinRMConfig {
 	c := remoteexec.WinRMConfig{Host: host, User: user, Port: port}
 	if cfg != nil {

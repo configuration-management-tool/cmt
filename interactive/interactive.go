@@ -159,6 +159,27 @@ type hostSession struct {
 	close func() error
 }
 
+// classifyWait turns one remoteexec.Session.Wait() outcome into the
+// triple hostSession.wait reports — shared by local.go and ssh.go, since
+// both now drive a remoteexec.Session identically and classify its result
+// the same way.
+//
+// ctxErr is checked FIRST and on its own: when the context is cancelled
+// the session was force-closed (by exec.CommandContext for a local
+// session, or by ssh.go's own ctx.Done() watcher for an SSH one), so werr
+// describes that termination rather than anything the command itself did,
+// and reporting an exit code from it would be reporting our own signal as
+// the command's result.
+func classifyWait(rc int, werr, ctxErr error) (int, bool, error) {
+	if ctxErr != nil {
+		return -1, true, nil
+	}
+	if werr != nil {
+		return -1, false, werr
+	}
+	return rc, false, nil
+}
+
 // Run resolves group's hosts (exactly as orchestrate.Runner.Run does —
 // see orchestrate.ResolveHosts), opens a live session to each
 // concurrently, forwards ctx's cancellation and opts.Stdin to all of
@@ -186,6 +207,9 @@ func (r *Runner) Run(ctx context.Context, groupName, cmdName string, opts Option
 	}
 	if group.WinRM != nil {
 		return Summary{}, fmt.Errorf("interactive: interactive mode is not supported for winrm targets (hosts_group %q)", groupName)
+	}
+	if group.Become != nil {
+		return Summary{}, fmt.Errorf("interactive: interactive mode is not supported with become configured (hosts_group %q): go-remoteexec/transport's Become decorator does not implement streaming", groupName)
 	}
 
 	inv := r.Inventory

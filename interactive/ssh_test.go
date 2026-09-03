@@ -6,18 +6,11 @@ package interactive
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/rsa"
-	"encoding/pem"
 	"net"
-	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 
 	"github.com/configuration-management-tool/cmt/manifest"
 )
@@ -189,7 +182,8 @@ func TestDialSSHSessionParseHostError(t *testing.T) {
 }
 
 // TestDialSSHSessionNoAuthMethod covers dialSSHSession's passthrough of
-// buildSSHClientConfig's "no auth method configured" error.
+// remoteexec.DialSSH's own "no auth method configured" error when the
+// group's ssh{} block has no password, private key, or UseAgent set.
 func TestDialSSHSessionNoAuthMethod(t *testing.T) {
 	t.Setenv("SSH_AUTH_SOCK", "")
 	ctx, cancel := context.WithCancel(context.Background())
@@ -300,165 +294,12 @@ func TestDialSSHSessionWaitNonExitError(t *testing.T) {
 	}
 }
 
-// TestBuildSSHClientConfigNoAuth covers the "no auth method available"
-// error when neither a private key, a password, nor a reachable
-// ssh-agent is configured.
-func TestBuildSSHClientConfigNoAuth(t *testing.T) {
-	t.Setenv("SSH_AUTH_SOCK", "")
-	if _, err := buildSSHClientConfig("u", &manifest.SSHConfig{}); err == nil {
-		t.Fatal("expected an error with no auth method configured")
-	}
-	if _, err := buildSSHClientConfig("u", nil); err == nil {
-		t.Fatal("expected an error with a nil SSHConfig and no ambient auth")
-	}
-}
-
-// TestBuildSSHClientConfigPrivateKey covers both the plain and
-// passphrase-protected private-key auth paths, plus the read/parse
-// error paths.
-func TestBuildSSHClientConfigPrivateKey(t *testing.T) {
-	dir := t.TempDir()
-	keyPath := writeTestPrivateKey(t, dir, "")
-
-	cfg, err := buildSSHClientConfig("u", &manifest.SSHConfig{PrivateKey: keyPath})
-	if err != nil {
-		t.Fatalf("buildSSHClientConfig: %v", err)
-	}
-	if len(cfg.Auth) == 0 {
-		t.Fatal("expected at least one auth method")
-	}
-
-	passphrasePath := writeTestPrivateKey(t, dir, "s3cret")
-	cfg, err = buildSSHClientConfig("u", &manifest.SSHConfig{PrivateKey: passphrasePath, PrivateKeyPassphrase: "s3cret"})
-	if err != nil {
-		t.Fatalf("buildSSHClientConfig (passphrase): %v", err)
-	}
-	if len(cfg.Auth) == 0 {
-		t.Fatal("expected at least one auth method")
-	}
-
-	// A missing key file.
-	if _, err := buildSSHClientConfig("u", &manifest.SSHConfig{PrivateKey: dir + "/does-not-exist"}); err == nil {
-		t.Fatal("expected an error for a missing private key file")
-	}
-
-	// A key file that isn't a valid key.
-	badPath := dir + "/bad.key"
-	if err := writeFile(badPath, "not a key"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := buildSSHClientConfig("u", &manifest.SSHConfig{PrivateKey: badPath}); err == nil {
-		t.Fatal("expected an error for an unparseable private key")
-	}
-
-	// A passphrase-protected key given the wrong passphrase.
-	if _, err := buildSSHClientConfig("u", &manifest.SSHConfig{PrivateKey: passphrasePath, PrivateKeyPassphrase: "wrong"}); err == nil {
-		t.Fatal("expected an error for the wrong passphrase")
-	}
-}
-
-// TestBuildSSHClientConfigHostKeyCheck covers HostKeyCheck=true using a
-// known_hosts file, including the "file does not exist" error path.
-func TestBuildSSHClientConfigHostKeyCheck(t *testing.T) {
-	dir := t.TempDir()
-	khPath := dir + "/known_hosts"
-	if err := writeFile(khPath, ""); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := buildSSHClientConfig("u", &manifest.SSHConfig{
-		Password: "x", HostKeyCheck: true, KnownHostsFile: khPath,
-	})
-	if err != nil {
-		t.Fatalf("buildSSHClientConfig: %v", err)
-	}
-	if cfg.HostKeyCallback == nil {
-		t.Fatal("expected a non-nil HostKeyCallback")
-	}
-
-	if _, err := buildSSHClientConfig("u", &manifest.SSHConfig{
-		Password: "x", HostKeyCheck: true, KnownHostsFile: dir + "/does-not-exist",
-	}); err == nil {
-		t.Fatal("expected an error for a missing known_hosts file")
-	}
-}
-
-// TestKnownHostsPathDefault covers the empty-KnownHostsFile fallback to
-// ~/.ssh/known_hosts.
-func TestKnownHostsPathDefault(t *testing.T) {
-	if got := knownHostsPath("/explicit/path"); got != "/explicit/path" {
-		t.Errorf("knownHostsPath(explicit) = %q", got)
-	}
-	if got := knownHostsPath(""); got == "" || !strings.HasSuffix(got, "/.ssh/known_hosts") {
-		t.Errorf("knownHostsPath(\"\") = %q, want a ~/.ssh/known_hosts path", got)
-	}
-}
-
-// TestKnownHostsPathHomeUnset covers knownHostsPath's own fallback when
-// os.UserHomeDir itself fails (unix: an empty $HOME).
-func TestKnownHostsPathHomeUnset(t *testing.T) {
-	t.Setenv("HOME", "")
-	if got := knownHostsPath(""); got != "" {
-		t.Errorf("knownHostsPath(\"\") with no $HOME = %q, want empty", got)
-	}
-}
-
-// TestBuildSSHClientConfigConnectTimeout covers the ConnectTimeout > 0
-// override (the zero-value/library-default path is exercised by every
-// other buildSSHClientConfig test, which all pass ConnectTimeout unset).
-func TestBuildSSHClientConfigConnectTimeout(t *testing.T) {
-	cfg, err := buildSSHClientConfig("u", &manifest.SSHConfig{Password: "x", ConnectTimeout: 7})
-	if err != nil {
-		t.Fatalf("buildSSHClientConfig: %v", err)
-	}
-	if cfg.Timeout != 7*time.Second {
-		t.Errorf("Timeout = %v, want 7s", cfg.Timeout)
-	}
-}
-
-// TestSSHAgentAuthMethod covers both branches of sshAgentAuthMethod: no
-// $SSH_AUTH_SOCK set, and one pointing at something unreachable.
-func TestSSHAgentAuthMethod(t *testing.T) {
-	t.Setenv("SSH_AUTH_SOCK", "")
-	if _, ok := sshAgentAuthMethod(); ok {
-		t.Error("expected ok=false with no SSH_AUTH_SOCK set")
-	}
-
-	t.Setenv("SSH_AUTH_SOCK", "/does/not/exist.sock")
-	if _, ok := sshAgentAuthMethod(); ok {
-		t.Error("expected ok=false with an unreachable SSH_AUTH_SOCK")
-	}
-}
-
-// writeTestPrivateKey generates a fresh RSA key, PEM-encodes it
-// (optionally passphrase-protected, using golang.org/x/crypto/ssh's own
-// encoding so it round-trips through ssh.ParsePrivateKey(WithPassphrase)
-// exactly as a real key file would), writes it to dir, and returns its
-// path.
-func writeTestPrivateKey(t *testing.T, dir, passphrase string) string {
-	t.Helper()
-	key, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		t.Fatalf("generating test private key: %v", err)
-	}
-
-	var block *pem.Block
-	if passphrase != "" {
-		block, err = ssh.MarshalPrivateKeyWithPassphrase(key, "", []byte(passphrase))
-	} else {
-		block, err = ssh.MarshalPrivateKey(key, "")
-	}
-	if err != nil {
-		t.Fatalf("marshaling test private key: %v", err)
-	}
-
-	path := filepath.Join(dir, "id_"+strconv.Itoa(len(passphrase))+"_test")
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
-		t.Fatalf("writing test private key: %v", err)
-	}
-	return path
-}
-
-func writeFile(path, contents string) error {
-	return os.WriteFile(path, []byte(contents), 0o600)
-}
+// Private-key/passphrase/host-key-check/known_hosts/ssh-agent auth-method
+// construction used to be tested directly here, against this package's
+// own now-deleted buildSSHClientConfig/knownHostsPath/sshAgentAuthMethod.
+// That logic lives in github.com/go-remoteexec/transport now (see ssh.go's
+// header comment) — connect_test.go already covers every manifest.SSHConfig
+// field reaching the right remoteexec.SSHConfig field (the mapping this
+// package and the buffered path both depend on), and the tests below still
+// exercise dialSSHSession end-to-end including a real password-auth
+// handshake against the in-process test server.

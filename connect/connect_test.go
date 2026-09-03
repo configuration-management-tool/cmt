@@ -90,7 +90,7 @@ func TestDialBadHostString(t *testing.T) {
 
 func TestBuildSSHConfig(t *testing.T) {
 	// Host string user/port win over the group's ssh{} config.
-	c := buildSSHConfig("stringuser", "h", 2200, &manifest.SSHConfig{
+	c := BuildSSHConfig("stringuser", "h", 2200, &manifest.SSHConfig{
 		User: "cfguser", Port: 22, Password: "pw", PrivateKey: "/key", PrivateKeyPassphrase: "phrase",
 		HostKeyCheck: true, KnownHostsFile: "/kh", TTY: true, TempDir: "/tmp2", ConnectTimeout: 5,
 	})
@@ -104,20 +104,20 @@ func TestBuildSSHConfig(t *testing.T) {
 	}
 
 	// No host-string user/port: the group's config fills them in.
-	c = buildSSHConfig("", "h", 0, &manifest.SSHConfig{User: "cfguser", Port: 22})
+	c = BuildSSHConfig("", "h", 0, &manifest.SSHConfig{User: "cfguser", Port: 22})
 	if c.User != "cfguser" || c.Port != 22 {
 		t.Errorf("expected group config to fill in user/port: %+v", c)
 	}
 
 	// No group config at all: default user is "root", port passes through.
-	c = buildSSHConfig("", "h", 0, nil)
+	c = BuildSSHConfig("", "h", 0, nil)
 	if c.User != "root" {
 		t.Errorf("expected default user root, got %q", c.User)
 	}
 
 	// A zero ConnectTimeout leaves the library's own default (0 = "use
 	// library default") alone.
-	c = buildSSHConfig("u", "h", 0, &manifest.SSHConfig{})
+	c = BuildSSHConfig("u", "h", 0, &manifest.SSHConfig{})
 	if c.Timeout != 0 {
 		t.Errorf("expected Timeout 0 (library default), got %v", c.Timeout)
 	}

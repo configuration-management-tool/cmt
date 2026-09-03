@@ -254,10 +254,12 @@ supported for winrm targets"), not a silent best-effort attempt — see
   [Architecture](#architecture-buffered-vs-streaming-execution) below).
 
 **Deferred, not stubbed:** interactive sessions (`interactive = true`)
-against a **WinRM**-configured `hosts_group`. `package interactive` only
-drives local (`os/exec`) and SSH (`golang.org/x/crypto/ssh`) targets; a
-WinRM target is a clear error at run time rather than a silent
-best-effort/degraded attempt.
+against a **WinRM**-configured `hosts_group`, or a `hosts_group` with a
+**`become {}`** block. `package interactive` only drives local and SSH
+targets, streaming (neither `WinRM` nor a `remoteexec.Become`-wrapped
+connection implements the streaming primitive it needs — see the
+architecture section below); either is a clear error at run time rather
+than a silent best-effort/degraded attempt.
 
 ## Architecture: buffered vs. streaming execution
 
@@ -272,24 +274,23 @@ best-effort/degraded attempt.
 
 - **`interactive`** (for `interactive = true` commands) needs the opposite
   shape: observe output as it's produced, and keep feeding input for as long
-  as the session is open. `remoteexec.Connection`'s buffered `Exec` cannot
-  do that no matter how it's wrapped, so `package interactive` drives each
-  host directly instead — `os/exec` for a local target, and
-  `golang.org/x/crypto/ssh` *directly* (not through
-  `github.com/go-remoteexec/transport`) for an SSH target.
+  as the session is open. `remoteexec.Connection`'s buffered `Exec` cannot do
+  that no matter how it's wrapped, so `package interactive` instead uses
+  `github.com/go-remoteexec/transport`'s `Streamer`/`Session` pair (added in
+  v0.1.4): `remoteexec.NewLocal()` for a local target, `remoteexec.DialSSH`
+  for an SSH one, each type-asserted to `Streamer` and opened via
+  `NewSession(ctx)` instead of `Exec`. `connect.BuildSSHConfig` (the same
+  mapping the buffered path uses) resolves a `hosts_group`'s `ssh{}` config
+  either way, so the two paths never diverge on what a manifest's connection
+  settings mean.
 
-  This means `package interactive` re-implements a small amount of SSH
-  auth-method construction (private key parsing, password auth, ssh-agent
-  auth, a host-key-checking callback) that already exists privately inside
-  `go-remoteexec/transport`. **That duplication is deliberate, not an
-  oversight**: at the time this was written, `go-remoteexec/transport` is
-  under active, unrelated development elsewhere, and this project
-  intentionally avoids reaching into it mid-flight. Once
-  `go-remoteexec/transport` grows a streaming/session primitive of its own
-  (or exposes the `*ssh.Client` it dials), `package interactive`'s SSH path
-  should be migrated onto that and this duplication deleted — see the doc
-  comment at the top of [`interactive/ssh.go`](interactive/ssh.go) for the
-  full rationale.
+  `Streamer` is implemented by `Local` and `SSH`; `WinRM` deliberately is
+  not (WS-Management's poll-based Send/Receive shell protocol doesn't map
+  onto continuous streaming), and neither does a `remoteexec.Become`-wrapped
+  connection (its sudo/su/doas marker-based success detection needs
+  real-time stream scanning, not a slice of a buffered string) — both are
+  explicit run-time errors from `Runner.Run`, not a silent best-effort
+  attempt, matching the WinRM-deferred note above.
 
   Both packages still share the same host-resolution and env-layering rules
   (`orchestrate.ResolveHosts`/`MergeEnv`/`WithBuiltins`/`RenderEnv`, and

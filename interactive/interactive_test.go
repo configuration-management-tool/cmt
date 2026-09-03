@@ -63,6 +63,23 @@ func TestRunWinRMRejected(t *testing.T) {
 	}
 }
 
+// TestRunBecomeRejected covers Run's explicit rejection of an interactive
+// command on a hosts_group with become configured: go-remoteexec/
+// transport's Become decorator doesn't implement Streamer (see its own
+// package doc), so this is turned into a clear upfront error instead of
+// a confusing type-assertion failure surfacing from inside dialSSHSession.
+func TestRunBecomeRejected(t *testing.T) {
+	m := manifestWith(
+		map[string]manifest.Command{"shell": {Name: "shell", Run: "bash", Interactive: true}},
+		map[string]manifest.HostsGroup{"g": {Hosts: []string{"h1"}, Become: &manifest.BecomeConfig{}}},
+	)
+	r := &Runner{Manifest: m}
+	_, err := r.Run(context.Background(), "g", "shell", Options{})
+	if err == nil || !strings.Contains(err.Error(), "not supported with become configured") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
 func TestRunNoHostsResolved(t *testing.T) {
 	m := manifestWith(
 		map[string]manifest.Command{"shell": {Name: "shell", Run: "bash", Interactive: true}},
