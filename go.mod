@@ -1,6 +1,6 @@
 module github.com/configuration-management-tool/cmt
 
-go 1.26.4
+go 1.27.1
 
 require (
 	github.com/go-remoteexec/transport v0.2.0
