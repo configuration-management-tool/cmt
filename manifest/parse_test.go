@@ -135,11 +135,40 @@ target "deploy" {
 		t.Fatal("windows.WinRM is nil")
 	}
 	if win.WinRM.User != "Administrator" || win.WinRM.Port != 5986 || win.WinRM.Password != "winpw" ||
-		!win.WinRM.SSL || !win.WinRM.SSLVerify || win.WinRM.CACert != "/etc/ssl/ca.pem" ||
+		!win.WinRM.SSL || win.WinRM.InsecureSkipVerify || win.WinRM.CACert != "/etc/ssl/ca.pem" ||
 		win.WinRM.Transport != "negotiate" || win.WinRM.ClientCert != "/etc/ssl/client.pem" ||
 		win.WinRM.ClientKey != "/etc/ssl/client.key" || win.WinRM.ConnectTimeout != 30 ||
 		win.WinRM.TempDir != `C:\Windows\Temp` || win.WinRM.Path != "/wsman" {
 		t.Errorf("windows.WinRM = %#v", win.WinRM)
+	}
+
+	// `ssl-verify` is the manifest's word and means verify, so the
+	// fixture's `ssl-verify = true` has to leave InsecureSkipVerify
+	// false. The two interesting cases are the ones the old field got
+	// wrong: an absent attribute must still verify, and only an explicit
+	// false may turn it off.
+	for _, tc := range []struct {
+		name, attr string
+		wantSkip   bool
+	}{
+		{"absent", "", false},
+		{"explicit true", "ssl-verify = true", false},
+		{"explicit false", "ssl-verify = false", true},
+	} {
+		t.Run("ssl-verify "+tc.name, func(t *testing.T) {
+			src := "hosts_group \"w\" {\n  hosts = [\"h\"]\n  winrm {\n    user = \"u\"\n    ssl = true\n    " + tc.attr + "\n  }\n}\n"
+			mm, err := Parse([]byte(src), "t.cmt")
+			if err != nil {
+				t.Fatalf("parse: %v", err)
+			}
+			g, ok := mm.HostsGroups["w"]
+			if !ok || g.WinRM == nil {
+				t.Fatal("no winrm block parsed")
+			}
+			if g.WinRM.InsecureSkipVerify != tc.wantSkip {
+				t.Errorf("InsecureSkipVerify = %v, want %v", g.WinRM.InsecureSkipVerify, tc.wantSkip)
+			}
+		})
 	}
 
 	staging, ok := m.HostsGroups["staging"]

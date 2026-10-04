@@ -508,3 +508,51 @@ func (b *syncBuf) String() string {
 	defer b.mu.Unlock()
 	return b.buf.String()
 }
+
+// A session we force-close may leave a GRANDCHILD holding the stdout
+// write end, so the reader never reaches EOF on its own. That makes the
+// order of sess.close() and pumpWG.Wait() load-bearing: draining first
+// waits for an EOF that cannot arrive.
+//
+// TestRunInterruptStillRunning above covers the same path but only
+// catches this where the shell forks for `sleep 30` -- it failed on
+// Linux and Windows and passed on macOS. `sleep 30 & wait` forks
+// everywhere, so this one does not depend on which shell is installed.
+func TestRunInterruptWithSurvivingGrandchild(t *testing.T) {
+	m := manifestWith(
+		map[string]manifest.Command{"shell": {Name: "shell", Run: "sleep 30 & wait", Interactive: true}},
+		map[string]manifest.HostsGroup{"g": {Hosts: []string{"localhost"}}},
+	)
+	r := &Runner{Manifest: m}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stdinR, stdinW := io.Pipe()
+	defer stdinW.Close()
+
+	done := make(chan struct {
+		s   Summary
+		err error
+	}, 1)
+	go func() {
+		s, err := r.Run(ctx, "g", "shell", Options{Stdin: stdinR, Stdout: &syncBuf{}})
+		done <- struct {
+			s   Summary
+			err error
+		}{s, err}
+	}()
+
+	time.Sleep(200 * time.Millisecond)
+	cancel()
+
+	select {
+	case res := <-done:
+		if res.err == nil {
+			t.Fatal("expected an error (still-running host counts as failed)")
+		}
+		if len(res.s.Results) != 1 || !res.s.Results[0].StillRunning {
+			t.Errorf("Results = %#v, want one StillRunning host", res.s.Results)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return: the drain is waiting for an EOF a grandchild is holding open")
+	}
+}

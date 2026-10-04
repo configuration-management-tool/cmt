@@ -408,8 +408,35 @@ func driveHost(sess *hostSession, stdinCh <-chan []byte, done chan<- struct{}, r
 	exitCode, stillRunning, err := sess.wait()
 	close(done) // tell the broadcaster to stop targeting this host
 	closeStdin()
-	pumpWG.Wait() // stdout/stderr fully drained before reporting
-	sess.close()
+
+	// The order of these two depends on WHY the session ended, and
+	// getting it wrong hangs the run.
+	//
+	// go-remoteexec/transport v0.2.0 stopped letting Cmd.Wait close the
+	// session's output pipes, deliberately: a caller reads on its own
+	// schedule, and a fast command used to lose whatever it had written
+	// but nobody had read yet. The read ends are now closed by
+	// Session.Close and nothing else.
+	//
+	// That makes "drain, then close" wrong for a session we KILLED.
+	// io.Copy only returns at EOF, and EOF only arrives once every
+	// holder of the write end is gone -- which the direct child is, but
+	// a grandchild it forked is not. `sh -c 'sleep 30 & wait'` is enough
+	// to hold the pipe open forever, and a plain `sh -c 'sleep 30'` does
+	// it too wherever the shell forks rather than execs, which is why
+	// this failed on Linux and Windows while passing on macOS.
+	//
+	// So: when the process exited on its own, drain first, because
+	// everything it wrote is worth having. When we force-closed it,
+	// close first, because nothing more is coming and the drain cannot
+	// finish on its own.
+	if stillRunning {
+		sess.close()
+		pumpWG.Wait()
+	} else {
+		pumpWG.Wait() // stdout/stderr fully drained before reporting
+		sess.close()
+	}
 
 	results <- HostOutcome{Host: sess.host, ExitCode: exitCode, StillRunning: stillRunning, Err: err}
 }

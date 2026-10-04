@@ -82,17 +82,28 @@ type WinRMConfig struct {
 	User     string
 	Port     int
 	Password string
-	// SSL and SSLVerify default to false (off) when unset, matching
-	// go-remoteexec/transport's own zero-value behavior.
-	SSL            bool
-	SSLVerify      bool
-	CACert         string
-	Transport      string
-	ClientCert     string
-	ClientKey      string
-	ConnectTimeout int // seconds
-	TempDir        string
-	Path           string
+	// SSL defaults to false (off) when unset.
+	//
+	// Certificate verification is ON unless a manifest turns it off with
+	// `ssl-verify = false`. This field is named for the unsafe state so
+	// the zero value is the safe one -- the same reason crypto/tls and
+	// go-remoteexec/transport both spell it this way.
+	//
+	// It used to read "SSL and SSLVerify default to false (off) when
+	// unset, matching go-remoteexec/transport's own zero-value
+	// behavior". That was accurate about the behaviour and wrong about
+	// the intent: transport's field was commented "default true" while
+	// its code made the zero value skip verification, and this package
+	// copied the accident downstream as though it were a decision.
+	SSL                bool
+	InsecureSkipVerify bool
+	CACert             string
+	Transport          string
+	ClientCert         string
+	ClientKey          string
+	ConnectTimeout     int // seconds
+	TempDir            string
+	Path               string
 }
 
 // BecomeConfig is a hosts_group's optional privilege-escalation

@@ -238,7 +238,17 @@ func decodeWinRMConfig(blk *hclsyntax.Block) (WinRMConfig, error) {
 		func() (err error) { cfg.Port, _, err = attrInt(attrs, "port"); return },
 		func() (err error) { cfg.Password, _, err = attrString(attrs, "password"); return },
 		func() (err error) { cfg.SSL, _, err = attrBool(attrs, "ssl"); return },
-		func() (err error) { cfg.SSLVerify, _, err = attrBool(attrs, "ssl-verify"); return },
+		// `ssl-verify` is the manifest's word and means verify; the field
+		// means skip. Only an explicit `ssl-verify = false` turns
+		// verification off -- an absent attribute leaves the field at its
+		// zero value, which verifies.
+		func() error {
+			v, ok, err := attrBool(attrs, "ssl-verify")
+			if err == nil && ok {
+				cfg.InsecureSkipVerify = !v
+			}
+			return err
+		},
 		func() (err error) { cfg.CACert, _, err = attrString(attrs, "ca-cert"); return },
 		func() (err error) { cfg.Transport, _, err = attrString(attrs, "transport"); return },
 		func() (err error) { cfg.ClientCert, _, err = attrString(attrs, "client-cert"); return },

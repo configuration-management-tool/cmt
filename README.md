@@ -122,7 +122,8 @@ target "deploy" {
     client-cert, client-key, connect-timeout, tmpdir, path }` — used only
     when a `winrm` block is present (a deliberate value-add over sup, which
     has no Windows transport; free here since
-    `go-remoteexec/transport` already speaks WS-Management).
+    `go-remoteexec/transport` already speaks WS-Management). TLS
+    certificates are verified unless a block says `ssl-verify = false`.
   - `become { method, user, password }` — privilege escalation
     (`method` is `sudo` (default), `su`, or `doas`).
 

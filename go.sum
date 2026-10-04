@@ -10,6 +10,8 @@ github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/go-remoteexec/transport v0.1.7 h1:Xp9K8C+26JZ2pb7slPyR8xTLTN8+tS550TNKcwhA+eQ=
 github.com/go-remoteexec/transport v0.1.7/go.mod h1:xE/90EDbXYhbQqYP+IOGMcebEMtZbqXMvg1DDOaJY1I=
+github.com/go-remoteexec/transport v0.2.0 h1:PWQWaW52C2iqGOJp7m912ggDhaKYebIUe7t8z1BqHYM=
+github.com/go-remoteexec/transport v0.2.0/go.mod h1:5gDnta+scYyI1Fxq7ozhpdxZXffW/9uyRXk6bxZhK8w=
 github.com/go-test/deep v1.0.3 h1:ZrJSEWsXzPOxaZnFteGEfooLba+ju3FYIbOrS+rQd68=
 github.com/go-test/deep v1.0.3/go.mod h1:wGDj63lr65AM2AQyKZd/NYHGb0R+1RLqB8NKt3aSFNA=
 github.com/google/go-cmp v0.6.0 h1:ofyhxvXcZhMsU5ulbFiLKl/XBFqE1GSq7atu8tAmTRI=
