@@ -125,14 +125,15 @@ func TestBuildSSHConfig(t *testing.T) {
 
 func TestBuildWinRMConfig(t *testing.T) {
 	c := buildWinRMConfig("stringuser", "h", 5987, &manifest.WinRMConfig{
-		User: "cfguser", Port: 5986, Password: "pw", SSL: true, SSLVerify: true, CACert: "/ca",
+		User: "cfguser", Port: 5986, Password: "pw", SSL: true, CACert: "/ca",
 		Transport: "basic", ClientCert: "/cc", ClientKey: "/ck", ConnectTimeout: 10,
 		TempDir: `C:\Temp`, Path: "/wsman2",
 	})
 	if c.User != "stringuser" || c.Port != 5987 {
 		t.Errorf("host-string user/port should win: %+v", c)
 	}
-	if c.Password != "pw" || !c.SSL || !c.SSLVerify || c.CACert != "/ca" || c.Transport != "basic" ||
+	// nothing asked to skip verification, so nothing may skip it
+	if c.Password != "pw" || !c.SSL || c.InsecureSkipVerify || c.CACert != "/ca" || c.Transport != "basic" ||
 		c.ClientCert != "/cc" || c.ClientKey != "/ck" || c.ConnectTimeout != 10*time.Second ||
 		c.TempDir != `C:\Temp` || c.Path != "/wsman2" {
 		t.Errorf("winrm config fields not mapped: %+v", c)

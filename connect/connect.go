@@ -164,7 +164,7 @@ func buildWinRMConfig(user, host string, port int, cfg *manifest.WinRMConfig) re
 		}
 		c.Password = cfg.Password
 		c.SSL = cfg.SSL
-		c.SSLVerify = cfg.SSLVerify
+		c.InsecureSkipVerify = cfg.InsecureSkipVerify
 		c.CACert = cfg.CACert
 		c.Transport = cfg.Transport
 		c.ClientCert = cfg.ClientCert
