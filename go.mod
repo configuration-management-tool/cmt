@@ -3,7 +3,7 @@ module github.com/configuration-management-tool/cmt
 go 1.27.1
 
 require (
-	github.com/go-remoteexec/transport v0.2.0
+	github.com/go-remoteexec/transport v0.5.0
 	github.com/hashicorp/hcl/v2 v2.25.0
 	github.com/zclconf/go-cty v1.19.0
 	golang.org/x/crypto v0.57.0
