@@ -5,7 +5,7 @@ go 1.27.1
 require (
 	github.com/go-remoteexec/transport v0.8.1
 	github.com/hashicorp/hcl/v2 v2.25.0
-	github.com/zclconf/go-cty v1.19.0
+	github.com/zclconf/go-cty v1.20.0
 	golang.org/x/crypto v0.58.0
 )
 
